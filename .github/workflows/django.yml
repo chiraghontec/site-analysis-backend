@@ -1,0 +1,113 @@
+name: Django CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgis/postgis:14-3.2
+        env:
+          POSTGRES_DB: site_analysis_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          binutils \
+          libproj-dev \
+          gdal-bin \
+          libgdal-dev \
+          libgeos-dev \
+          libspatialite-dev \
+          spatialite-bin \
+          postgresql-client
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run migrations
+      env:
+        DATABASE_URL: postgis://postgres:postgres@localhost:5432/site_analysis_test
+        DJANGO_SETTINGS_MODULE: site_analysis_backend.settings
+      run: |
+        python manage.py migrate
+
+    - name: Run tests
+      env:
+        DATABASE_URL: postgis://postgres:postgres@localhost:5432/site_analysis_test
+        DJANGO_SETTINGS_MODULE: site_analysis_backend.settings
+        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        NASA_POWER_API_KEY: ${{ secrets.NASA_POWER_API_KEY }}
+      run: |
+        python manage.py test
+
+    - name: Run API tests
+      env:
+        DATABASE_URL: postgis://postgres:postgres@localhost:5432/site_analysis_test
+        DJANGO_SETTINGS_MODULE: site_analysis_backend.settings
+        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
+        NASA_POWER_API_KEY: ${{ secrets.NASA_POWER_API_KEY }}
+      run: |
+        python manage.py runserver &
+        sleep 10
+        python test_api.py
+        python test_climate_api.py
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install safety
+      run: pip install safety bandit
+    
+    - name: Check for security vulnerabilities in dependencies
+      run: safety check -r requirements.txt
+    
+    - name: Run bandit security linter
+      run: bandit -r . -f json -o bandit-report.json || true
+    
+    - name: Upload bandit results
+      uses: actions/upload-artifact@v3
+      with:
+        name: bandit-results
+        path: bandit-report.json
